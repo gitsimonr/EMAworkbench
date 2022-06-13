@@ -193,18 +193,59 @@ class BaseVadereModel(FileModel):
                     process.stderr
                 )
             )
+
         # load results
-        # .csv is assumed to be timeseries, .txt scaler
+        # consider only .csv and .txt files
         # other file types are ignored
+        array_res = {}
         timeseries_res = {}
         scalar_res = []
         for file in self.processor_files:
-            if file.endswith(".csv"):
-                timeseries_res[file] = pd.read_csv(
-                    os.path.join(output_dir, file), sep=" "
+            if file.endswith(".txt") or file.endswith(".csv"):
+                path_to_file = os.path.join(output_dir, file)
+                # read meta data
+                with open(path_to_file, "r") as f:
+                    header = f.readline()
+                if not header[0] == '#':
+                    raise EMAError(
+                        "Vadere output file {} does not contain meta data. Please add meta data to output files. \n Vadere run error error: {}".format(
+                            path_to_file,
+                            process.stderr # TODO check error message
+                        )
+                    )
+                header = header.strip()
+                header = header.split(sep=",")
+
+                index_columns = list(range(int(header[0].strip('#IDXCOL='))))
+                n_indices = len(index_columns)
+                separator = header[2].strip('SEP=\'')
+
+                # read file
+                df = pd.read_csv(
+                   path_to_file, index_col=index_columns, sep=separator, comment='#'
                 )
-            if file.endswith(".txt"):
-                scalar_res.append(os.path.join(output_dir, file))
+
+                # data_keys with only one index, e.g. pedestrianId or timeStep
+                if (n_indices == 1):
+                    # scalar output
+                    if df.size == 1:
+                        scalar_res.append(df.copy())
+                    # array output
+                    elif df.size > 1:
+                        data_key = df.index.names[0]
+                        if data_key == 'timeStep':
+                            timeseries_res[file] = df.copy()
+                        else:
+                            array_res[file] = df.copy()
+                # data_key with two or more indices, e.g. pedestrianId and timeStep (TimestepPedestrianIdKey)
+                else:
+                    # TODO
+                    raise EMAError(
+                        "Vadere output file {} contains multiindices, which can not be processed. \n Vadere run error error: {}".format(
+                            path_to_file,
+                            process.stderr # TODO check error message
+                        )
+                    )
 
         # format data to EMA structure
         res = {}
@@ -218,6 +259,17 @@ class BaseVadereModel(FileModel):
                 timeseries_total = timeseries_res[next(iter(timeseries_res))]
             # format according to EMA preference
             res = {col: series.values for col, series in timeseries_total.iteritems()}
+
+        # handle array
+        if array_res:
+            if len(array_res) > 1: # TODO check if neccessary
+                array_total = pd.concat(
+                    [array_res[outcome] for outcome in array_res]
+                )
+            else:
+                array_total = array_res[next(iter(array_res))]
+            # format according to EMA preference
+            res = {col: series.values for col, series in array_total.iteritems()}
 
         # handle scalar
         if scalar_res:
